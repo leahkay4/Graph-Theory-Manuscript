@@ -79,19 +79,13 @@ all_sf_loc <- rbind(
 ```
 
 ```{r GCMS & ICPMS Raw Data From Excel File}
-raw_data <- suppressWarnings(read_excel("G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/6. Papers/[Paper 1] Graph Theory Paper/DSI + TAMU Datasheet 05142025.xlsx", 
-    sheet = "Main Data Sheet", col_types = c("text", 
-        "numeric", "numeric", "text", "text", 
-        "text", "text", "text", "text", "text", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", 
-        "numeric", "numeric", "numeric", "numeric", 
-        "text", "text", "text", "text", "numeric", 
-        "numeric", "numeric", "text", "numeric", 
+raw_data <- suppressWarnings(read_excel("G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/6. Papers/[Paper 1] Graph Theory Paper/Public Datasheet Graph Theory Paper.xlsx", 
+    col_types = c("text", "text", "text", 
+        "text", "text", "numeric", "numeric", 
         "numeric", "numeric", "numeric", 
         "numeric", "numeric", "numeric", 
         "numeric", "numeric", "numeric", 
-        "numeric"))) %>%
+        "numeric", "numeric"))) %>%
   left_join(all_sample_loc, by = "Sample_Loc", relationship = "many-to-many") %>%
   filter(`Sampling Year` == 2022)
 
@@ -147,19 +141,6 @@ raw_data <- raw_data %>%
 
 shapef <- st_as_sf(raw_data) %>%
   mutate(raw_data, sample_latitude = st_coordinates(geometry)[, 2],sample_longitude = st_coordinates(geometry)[, 1]) 
-
-# % of samples above EPA RS Limit
-# Fill out based on criteria comparing
-raw_data %>%
-  summarise(percent = (sum(Ti > 390, na.rm = TRUE) / n()) * 100)
-
-# % of samples above EPA GW SSL
-raw_data %>%
-  summarise(percent = (sum(Ti > 0.14, na.rm = TRUE) / n()) * 100)
-
-# % of samples above Background
-raw_data %>%
-  summarise(percent = (sum(Ti > 0.26, na.rm = TRUE) / n()) * 100)
 ```
 
 ```{r Garden & superfund site distances}
@@ -191,7 +172,7 @@ dist_df$Site_ID <- unique_site_ids
 comp_data_short <- as.data.frame(merge(shapef, dist_df, by = "Site_ID", all.x = TRUE))
 
 # Convert distances from meters to miles for specific numeric columns only
-comp_data_short[, 48:64] <- comp_data_short[, 48:64] * 0.000621371
+comp_data_short[, 27:43] <- comp_data_short[, 27:43] * 0.000621371
 ```
 
 ```{r State & county maps}
@@ -361,7 +342,7 @@ dallas_buildings <- dallas_buildings %>%
 # Merge data and calculate distances
 d.total <- merge(subset(comp_data_short, City == "Dallas"), dallas_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
 
-colnames(d.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+colnames(d.total)[c(46:47)] <- c("build_latitude", "build_longitude")
 
 d.total$build_gard_dist <- apply(d.total, 1, function(row) {
   samp_lat <- as.numeric(row["sample_latitude"])
@@ -425,7 +406,7 @@ houston_buildings <- houston_buildings %>%
 
 # Merge data and calculate distances
 h.total <- merge(subset(comp_data_short, City == "Houston"), houston_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
-colnames(h.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+colnames(h.total)[c(46:47)] <- c("build_latitude", "build_longitude")
 
 h.total$build_gard_dist <- apply(h.total, 1, function(row) {
   samp_lat <- as.numeric(row["sample_latitude"])
@@ -488,7 +469,7 @@ sanantonio_buildings <- sanantonio_buildings %>%
 # Merge data and calculate distances
 sa.total <- merge(subset(comp_data_short, City == "San Antonio"), sanantonio_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
 
-colnames(sa.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+colnames(sa.total)[c(46:47)] <- c("build_latitude", "build_longitude")
 
 sa.total$build_gard_dist <- apply(sa.total, 1, function(row) {
   samp_lat <- as.numeric(row["sample_latitude"])
@@ -537,7 +518,7 @@ building_conc_data <- building_conc_data %>%
   rowwise() %>%
   mutate(sf_10miles = sum(c_across(starts_with("North Cavalcade"):ends_with("Bandera GW Plume")) <= 10, na.rm = TRUE))
 
-colnames(building_conc_data)[c(46:47)] <- c("sample_latitude","sample_longitude")
+# colnames(building_conc_data)[c(45:46)] <- c("sample_latitude","sample_longitude")
 
 #########  Merge city elevation data based on garden locations
 all_elev <- merge(d_el,h_el,s_el)
@@ -571,7 +552,7 @@ building_conc_data$garden_distance_citycenter <- mapply(
 ```{r Descriptive}
 # City wide boxplot
 comp_long <- comp_data_short %>%
-  pivot_longer(cols = c("As", "Be", "Cd", "Co", "Cr", "Fe", "Pb", "Se", "Ti"),
+  pivot_longer(cols = c("As","Be","Cd","Co","Cr","Fe","Pb","Se","Ti"),
                names_to = "Compound", 
                values_to = "Concentration")
 
