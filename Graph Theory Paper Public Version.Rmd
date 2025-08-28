@@ -1,0 +1,1770 @@
+---
+title: "2025-05-05_Graph Theory Analysis"
+author: "Leah Kocian"
+date: "2025-05-05"
+output: html_document
+---
+
+#### Setup the workspace
+
+```{r Packages, echo=FALSE}
+packages = c("ggplot2","corrplot","Hmisc","PerformanceAnalytics","FactoMineR",
+             "factoextra","randomForest","caret","magrittr","tidyr","sf","dplyr",
+             "readxl","writexl","ggthemes","ggpol","ggpubr","tmap","ggpmisc",
+             "units","ggpubr","raster","terra","tidycensus","tidyverse","tigris",
+             "ggiraph","patchwork","scales","mapdeck","geosphere","GGally","geodata",
+             "tidygeocoder","ggmap","tmaptools","OpenStreetMap","eks")
+
+for(p in packages){
+  if(!require(p, character.only = T)){
+    install.packages(p)}
+  library(p, character.only = T)}
+```
+
+```{r Color palettes and themes}
+c25 <- c("dodgerblue2", "#E31A1C","green4","#6A3D9A", "#FF7F00", 
+         "black", "gold1","skyblue2", "#FB9A99", "palegreen2","#CAB2D6",
+         "#FDBF6F","gray70", "khaki2","maroon", "orchid1", "deeppink1", "blue1",
+         "steelblue4","darkturquoise", "green1", "yellow4", "yellow3",
+         "darkorange4", "brown") # Color Palette
+
+c4 <- c("darkorange1","purple1","royalblue1","aquamarine3",alpha.f = 0.2)
+
+c10 <- c("aquamarine3","antiquewhite3","coral3","darkseagreen3","indianred3","rosybrown2","skyblue2","slateblue3","thistle3","tan1")
+```
+
+#### Import the data and files
+
+```{r Garden Shapefile Lat and Lon}
+# Function I made that automatically pulls in shapefile data from my computer based on the shapefiles I made in QGIS
+read_and_combine_shapefiles <- function(city, locations) {
+  path_base <- "G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/UrbanGardenShapefiles"
+  sample_locs <- lapply(locations, function(loc) {
+    read_sf(file.path(path_base, city, loc, "Sample_Locations.shp"))})
+  return(do.call(rbind, sample_locs))}
+
+houston_locations <- c("BE", "PFB", "OSP", "PFM", "HF", "PFF", "FTR", "PFW")
+dallas_locations <- c("BF", "BFE", "D", "LB", "OED", "UCG", "W")
+san_antonio_locations <- c("G", "FBM", "FBSJ", "TTF")
+
+# Combining all gardens and associated shapefile data into one dataframe (all_sample_loc)
+all_sample_loc <- rbind(
+  read_and_combine_shapefiles("Houston", houston_locations),
+  read_and_combine_shapefiles("Dallas", dallas_locations),
+  read_and_combine_shapefiles("San Antonio", san_antonio_locations))
+all_sample_loc
+```
+
+```{r Superfund site data}
+read_and_combine_superfund <- function(city, locations) {
+  path_base <- "G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/SuperfundSiteShapefiles"
+  sf_data <- lapply(locations, function(loc) {
+    sf <- read_sf(file.path(path_base, loc, "SF Point.shp"))
+    sf$City <- city  
+    return(sf)})
+return(do.call(rbind, sf_data))}
+
+houston_sf <- c("North Cavalcade", "South Cavalcade", "Many Diversified", "US Oil Recovery",
+                "Geneva Industries", "Sol Lynn", "Crystal Chemical", "Sheridan Disposal")
+dallas_sf <- c("Eldorado Chemical",
+               "Lane Plating", "RSR Corp", "Biological Ecological System", "Deflas Forge", "Van Der Horst USA Corp")
+san_antonio_sf <- c("RH Oil Tropican", "River Metal", "Bandera GW Plume")
+
+all_sf_loc <- rbind(
+  read_and_combine_superfund("Houston", houston_sf),
+  read_and_combine_superfund("Dallas", dallas_sf),
+  read_and_combine_superfund("San Antonio", san_antonio_sf))
+```
+
+```{r GCMS & ICPMS Raw Data From Excel File}
+raw_data <- suppressWarnings(
+  read_excel(
+    "G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/6. Papers/[Paper 1] Graph Theory Paper/Public Dataset Graph Theory Paper.xlsx", 
+    col_types = c("text", "skip", "skip", 
+        "text", "text", "text","text","text", "numeric", 
+        "text", "text", "text", "text", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "text", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric"))) %>%
+  left_join(all_sample_loc, by = "Sample_Loc", relationship = "many-to-many") %>%
+  filter(`Sampling Round` == 1)
+
+# Assign ClayPercGroup based on Group
+summary(raw_data$ClayPerc)
+
+raw_data <- raw_data %>%
+  mutate(ClayPercGroup = case_when(
+    ClayPerc >= 0 & ClayPerc <= 5.078 ~ 1,
+    ClayPerc > 5.078 & ClayPerc <= 8.251 ~ 2,  
+    ClayPerc > 8.251 & ClayPerc <= 14.905 ~ 3, 
+    ClayPerc > 14.905 & ClayPerc <= 36.935 ~ 4,
+    TRUE ~ NA_real_))
+
+raw_data <- raw_data %>%
+  mutate(ClayPercRange = case_when(
+    ClayPercGroup == 1 ~ "0 - 5.078",    
+    ClayPercGroup == 2 ~ "5.078 - 8.251",
+    ClayPercGroup == 3 ~ "8.251 - 14.905", 
+    ClayPercGroup == 4 ~ "14.905 - 36.935",
+    TRUE ~ NA_character_))
+
+summary(raw_data$TotalCarbon)
+
+raw_data <- raw_data %>%
+  mutate(TotalCarbonGroup = case_when(
+    TotalCarbon >= 1.71 & TotalCarbon <= 10.89 ~ 1,
+    TotalCarbon > 10.89 & TotalCarbon <= 21.28 ~ 2,  
+    TotalCarbon > 21.28 & TotalCarbon <= 42.33 ~ 3, 
+    TotalCarbon > 42.33 & TotalCarbon <= 141.70 ~ 4,
+    TRUE ~ NA_real_))
+
+# Create a human-readable range for each group
+raw_data <- raw_data %>%
+  mutate(TotalCarbonRange = case_when(
+    TotalCarbonGroup == 1 ~ "1.71 - 10.89",   
+    TotalCarbonGroup == 2 ~ "10.90 - 21.28", 
+    TotalCarbonGroup == 3 ~ "21.29 - 42.33",  
+    TotalCarbonGroup == 4 ~ "42.34 - 141.70", 
+    TRUE ~ NA_character_))
+
+summary(raw_data$Precip)
+
+raw_data <- raw_data %>%
+  mutate(PrecipGroup = case_when(
+    Precip >= 0.930 & Precip <= 2.090 ~ 1,
+    Precip > 2.090 & Precip <= 2.230 ~ 2,  
+    Precip > 2.230 & Precip <= 2.270 ~ 3, 
+    Precip > 2.270 & Precip <= 2.450 ~ 4,
+    TRUE ~ NA_real_))
+
+# Create a human-readable range for each group
+raw_data <- raw_data %>%
+  mutate(PrecipRange = case_when(
+    PrecipGroup == 1 ~ "0.930 - 2.090",   
+    PrecipGroup == 2 ~ "2.090 - 2.230", 
+    PrecipGroup == 3 ~ "2.230 - 2.270",  
+    PrecipGroup == 4 ~ "2.270 - 2.450", 
+    TRUE ~ NA_character_))
+
+shapef <- st_as_sf(raw_data) %>%
+  mutate(raw_data, sample_latitude = st_coordinates(geometry)[, 2],sample_longitude = st_coordinates(geometry)[, 1]) 
+```
+
+```{r Garden & superfund site distances}
+garden_sf <- st_as_sf(shapef, coords = c("sample_longitude", "sample_latitude"), crs = 4326)
+superfund_sf <- st_as_sf(all_sf_loc, crs = 4326)
+
+unique_site_ids <- unique(garden_sf$Site_ID)
+# Initialize an empty data frame to store distances
+dist_df <- data.frame(matrix(NA, nrow = length(unique_site_ids), 
+                             ncol = nrow(superfund_sf)))
+colnames(dist_df) <- superfund_sf$Name
+rownames(dist_df) <- unique_site_ids
+
+# Calculate distances for each Site_ID
+for (i in seq_along(unique_site_ids)) {
+  current_site_id <- unique_site_ids[i]
+  current_garden <- garden_sf[garden_sf$Site_ID == current_site_id, ]
+  dist_df[i, ] <- mapply(function(superfund_name) {
+    min(st_distance(current_garden, 
+                    superfund_sf[superfund_sf$Name == superfund_name, ]))}, 
+    superfund_sf$Name)}
+
+dist_df$Site_ID <- unique_site_ids
+```
+
+```{r Merge compound data with superfund site distance} 
+# Merge shapef and dist_df
+comp_data_short <- as.data.frame(merge(shapef, dist_df, by = "Site_ID", all.x = TRUE))
+
+# Convert distances from meters to miles for specific numeric columns only
+comp_data_short[, 48:64] <- comp_data_short[, 48:64] * 0.000621371
+```
+
+```{r State & county maps}
+us <- gadm(country='USA',level=2, path=tempdir(), version="latest", resolution=1)
+texas <- us[us$NAME_1 == "Texas", ]
+houston <- us[us$NAME_1 == "Texas" & us$NAME_2 %in% c("Waller", "Harris"), ]
+sanantonio <- us[us$NAME_1 == "Texas" & us$NAME_2 %in% c("Bexar"), ]
+dallas <- us[us$NAME_1 == "Texas" & us$NAME_2 %in% c("Dallas","Kaufman"), ]
+unique_gardens <- shapef[!duplicated(shapef$Loc_ID), ]
+
+texas.sf <- st_as_sf(texas)
+houston.sf <- st_as_sf(houston)
+sanantonio.sf <- st_as_sf(sanantonio)
+dallas.sf <- st_as_sf(dallas)
+unique_gardens.sf <- st_as_sf(unique_gardens)
+superfund.sf <- st_as_sf(all_sf_loc)
+
+# Bound the shapefile
+bounding_box <- extent(-99, -92.9, 27.9, 33)
+cropped_texas <- crop(texas, bounding_box)
+cropped_texas.sf <- st_as_sf(cropped_texas)
+
+# Creating extents in each city based on sampling location
+create_city_extent <- function(city_name, shapef_data, superfund_data) {
+  city_samples <- subset(shapef_data, City == city_name)
+  city_superfunds <- subset(superfund_data, City == city_name)
+  combined_geometry <- st_combine(c(st_geometry(city_samples), st_geometry(city_superfunds)))
+  city_extent <- st_bbox(combined_geometry)
+  return(city_extent)}
+
+# Create the city extents
+houston_extent <- create_city_extent("Houston", shapef, all_sf_loc)
+dallas_extent <- create_city_extent("Dallas", shapef, all_sf_loc)
+sanantonio_extent <- create_city_extent("San Antonio", shapef, all_sf_loc)
+
+### Working with the elements
+comp_long <- comp_data_short %>%
+  pivot_longer(cols = c("As", "Be", "Cd", "Co", "Cr", "Fe", "Pb", "Se", "TI"),
+               names_to = "Compound", 
+               values_to = "Concentration")
+
+###########
+## TEXAS
+###########
+tm_shape(texas.sf) +
+  tm_borders(lwd = 2.0,lty = "solid",col="black") +
+  tm_shape(dallas.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(houston.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(sanantonio.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(shapef) +
+  tm_dots(size = 0.2, col = "blue")
+
+tm_shape(cropped_texas.sf) +
+  tm_borders(lwd = 4.0,lty = "solid", col="black") +
+  tm_shape(dallas.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(houston.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(sanantonio.sf) +
+  tm_polygons(col="orange",alpha = 0.8) +
+  tm_shape(shapef) +
+  tm_dots(size = 0.2, col = "blue") +
+  tm_scale_bar(size=3) +
+  tm_scale_bar(position = "BOTTOM")
+
+###########
+## DALLAS
+###########
+dallas_center <- geo(address = "Dallas, TX", method = 'osm')
+dallas_bbox <- st_bbox(dallas.sf)
+osm_dallas <- read_osm(dallas_bbox)
+
+tmap_mode("view")
+tmap_mode("plot")
+tm_shape(osm_dallas) +
+  tm_rgb(alpha=0.7) +
+  tm_shape(shapef) +
+  tm_dots(size=1,col="blue",alpha=0.7) +
+    tm_shape(superfund.sf) +
+  tm_dots(size=1,col="red",alpha=0.7) +
+  tm_layout(legend.show=FALSE,
+            scale=1.5) +
+  tm_scale_bar()
+
+########### 
+## HOUSTON
+###########
+houston_center <- geo(address = "Houston, TX", method = 'osm')
+houston_bbox <- st_bbox(houston.sf)
+osm_houston <- read_osm(houston_bbox)
+
+tmap_mode("view")
+tmap_mode("plot")
+tm_shape(osm_houston) +
+  tm_rgb(alpha=0.7) +
+  tm_shape(shapef) +
+  tm_dots(size=1,col="blue",alpha=0.7) +
+    tm_shape(superfund.sf) +
+  tm_dots(size=1,col="red",alpha=0.7) +
+  tm_layout(legend.show=FALSE,
+            scale=1.5) +
+  tm_scale_bar()
+
+########### 
+## SAN ANTONIO
+###########
+sanantonio_center <- geo(address = "San Antonio, TX", method = 'osm')
+sanantonio_bbox <- st_bbox(sanantonio.sf)
+osm_sanantonio <- read_osm(sanantonio_bbox)
+
+tmap_mode("view")
+tmap_mode("plot")
+tm_shape(osm_sanantonio) +
+  tm_rgb(alpha=0.7) +
+  tm_shape(shapef) +
+  tm_dots(size=1,col="blue",alpha=0.7) +
+    tm_shape(superfund.sf) +
+  tm_dots(size=1,col="red",alpha=0.7) +
+  tm_layout(legend.show=FALSE,
+            scale=1.5) +
+  tm_scale_bar()
+```
+
+```{r DensityMaps}
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+plot_concentration_map <- function(data, city_name, compound_name) {filtered_data <- data %>%
+    filter(Compound == compound_name, City == city_name) %>%
+    group_by(Garden) %>%
+    summarize(
+      avg_conc = mean(Concentration, na.rm = TRUE),
+      latitude = first(sample_latitude),
+      longitude = first(sample_longitude),
+      .groups = "drop") %>%
+    filter(!is.na(latitude), !is.na(longitude))
+  
+  ggplot() +
+    geom_density_2d(data = filtered_data, aes(x = longitude, y = latitude), color = "gray40", alpha=0.7) +
+    geom_point(data = filtered_data, aes(x = longitude, y = latitude, color = avg_conc), size = 4) +
+    scale_color_viridis_c(option = "D", name = paste(compound_name, "(ppm)")) +
+    coord_equal() +
+    theme_minimal(base_size = 13) +
+    labs(
+      title = paste(compound_name, "Concentration in", city_name),
+      x = "Longitude",
+      y = "Latitude")}
+
+cities <- c("Dallas", "Houston", "San Antonio")
+compounds <- c("Pb", "As", "Cd", "Cr")
+
+for (city in cities) {
+  for (compound in compounds) {
+    print(plot_concentration_map(comp_long, city, compound))}}
+```
+
+```{r Load building data in each city}
+# Define building_fun to handle cases with zero buildings
+building_fun <- function(garden, city) {
+  building_path <- paste('G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/UrbanGardenShapefiles/', city, '/', garden, '/building.shp', sep="")
+  
+  if (file.exists(building_path)) {
+    building <- read_sf(building_path)
+    if (nrow(building) == 0) {
+      building <- data.frame("Loc_ID" = garden, "City" = city, "building" = NA, "geometry" = NA)}
+    else {
+      building <- data.frame("building" = building$building, "geometry" = building$geometry)
+      building$Loc_ID <- garden
+      building$City <- city}}
+  else {
+    building <- data.frame("Loc_ID" = garden, "City" = city, "building" = NA, "geometry" = NA)}
+  return(building)}
+
+###########################
+######## DALLAS ###########
+###########################
+# Load and process elevation data
+d_el <- raster("G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/UrbanGardenShapefiles/Dallas/Dallas_DEM.tif")
+
+ext <- extent(d_el)
+coords <- expand.grid(x = seq(ext@xmin, ext@xmax, by = res(d_el)[1]), y = seq(ext@ymin, ext@ymax, by = res(d_el)[2]))
+coords <- as.data.frame(xyFromCell(d_el, 1:ncell(d_el)))
+values <- extract(d_el, coords)
+coords$lon <- coords$x
+coords$lat <- coords$y
+dallas_elevation <- as.data.frame(cbind(coords$lon, coords$lat, values))
+dallas_elevation$City <- "Dallas"
+colnames(dallas_elevation)[1:2] <- c("longitude", "latitude")
+
+dallas_gardens <- data.frame("Loc_ID" = c("BF", "BFE", "D", "LB", "OED", "UCG", "W"), "city" = "Dallas")
+
+# Process building data
+dallas_buildings <- do.call(rbind, mapply(building_fun, dallas_gardens$Loc_ID, dallas_gardens$city, SIMPLIFY = FALSE)) %>%
+  st_as_sf() %>%
+  filter(building %in% c("hospital", "car_repair", "retail", "commercial", "parking", "residential", "warehouse"))
+
+dallas_buildings <- dallas_buildings %>%
+  st_as_sf() %>%
+  st_centroid() %>%
+  mutate(latitude = st_coordinates(geometry)[, 2], longitude = st_coordinates(geometry)[, 1]) %>%
+  as.data.frame()
+
+# Merge data and calculate distances
+d.total <- merge(subset(comp_data_short, City == "Dallas"), dallas_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
+
+colnames(d.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+
+d.total$build_gard_dist <- apply(d.total, 1, function(row) {
+  samp_lat <- as.numeric(row["sample_latitude"])
+  samp_long <- as.numeric(row["sample_longitude"])
+  build_lat <- as.numeric(row["build_latitude"])
+  build_long <- as.numeric(row["build_longitude"])
+
+  # Calculate distance using Haversine formula
+  dist_meters <- distHaversine(c(samp_long, samp_lat), c(build_long, build_lat))
+  dist_miles <- dist_meters * 0.000621371
+  return(dist_miles)})
+
+d.total_filtered <- d.total %>%
+  filter(build_gard_dist <= 10)
+
+# Include zero counts for gardens with no buildings
+all_gardens <- unique(dallas_gardens$Loc_ID)
+
+building_counts <- d.total_filtered %>%
+  group_by(City, Loc_ID, building) %>%
+  summarise(building_count = n(), .groups = 'drop') %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(building_count = 0))
+
+avg_distances <- d.total_filtered %>%
+  group_by(Loc_ID, building) %>%
+  summarise(avg_distance = mean(build_gard_dist)) %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(avg_distance = NA))
+
+d.merged_data <- merge(building_counts, avg_distances, by = c("Loc_ID", "building"))
+
+############################
+######## HOUSTON ###########
+############################
+# Load and process elevation data
+h_el <- raster("G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/UrbanGardenShapefiles/Houston/Houston_DEM.tif")
+
+ext <- extent(h_el)
+coords <- expand.grid(x = seq(ext@xmin, ext@xmax, by = res(h_el)[1]), y = seq(ext@ymin, ext@ymax, by = res(h_el)[2]))
+coords <- as.data.frame(xyFromCell(h_el, 1:ncell(h_el)))
+values <- extract(h_el, coords)
+coords$lon <- coords$x
+coords$lat <- coords$y
+houston_elevation <- as.data.frame(cbind(coords$lon, coords$lat, values))
+houston_elevation$City <- "Houston"
+colnames(houston_elevation)[1:2] <- c("longitude", "latitude")
+
+houston_gardens <- data.frame("Loc_ID" = c("BE", "PFB", "OSP", "PFM", "HF", "PFF", "FTR", "PFW"), "city" = "Houston")
+
+# Process building data
+houston_buildings <- do.call(rbind, mapply(building_fun, houston_gardens$Loc_ID, houston_gardens$city, SIMPLIFY = FALSE)) %>%
+  st_as_sf() %>%
+  filter(building %in% c("hospital", "car_repair", "industrial", "retail", "commercial", "parking", "residential", "warehouse"))
+
+houston_buildings <- houston_buildings %>%
+  st_as_sf() %>%
+  st_centroid() %>%
+  mutate(latitude = st_coordinates(geometry)[, 2], longitude = st_coordinates(geometry)[, 1]) %>%
+  as.data.frame()
+
+# Merge data and calculate distances
+h.total <- merge(subset(comp_data_short, City == "Houston"), houston_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
+colnames(h.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+
+h.total$build_gard_dist <- apply(h.total, 1, function(row) {
+  samp_lat <- as.numeric(row["sample_latitude"])
+  samp_long <- as.numeric(row["sample_longitude"])
+  build_lat <- as.numeric(row["build_latitude"])
+  build_long <- as.numeric(row["build_longitude"])
+  dist_meters <- distHaversine(c(samp_long, samp_lat), c(build_long, build_lat))
+  dist_miles <- dist_meters * 0.000621371
+  return(dist_miles)})
+
+h.total_filtered <- h.total %>%
+  filter(build_gard_dist <= 10)
+
+# Include zero counts for gardens with no buildings
+all_gardens <- unique(houston_gardens$Loc_ID)
+
+building_counts <- h.total_filtered %>%
+  group_by(City, Loc_ID, building) %>%
+  summarise(building_count = n(), .groups = 'drop') %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(building_count = 0))
+
+avg_distances <- h.total_filtered %>%
+  group_by(Loc_ID, building) %>%
+  summarise(avg_distance = mean(build_gard_dist)) %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(avg_distance = NA))
+
+h.merged_data <- merge(building_counts, avg_distances, by = c("Loc_ID", "building"))
+
+################################
+######## San Antonio ###########
+################################
+# Load and process elevation data
+s_el <- raster("G:/My Drive/School/1. Notibility/1. Lets Get This PhD/4. BTM Industry Project/3. Data Files/Copy for Leah/UrbanGardenShapefiles/San Antonio/SanAntonio_DEM.tif")
+
+ext <- extent(s_el)
+coords <- expand.grid(x = seq(ext@xmin, ext@xmax, by = res(s_el)[1]), y = seq(ext@ymin, ext@ymax, by = res(s_el)[2]))
+coords <- as.data.frame(xyFromCell(s_el, 1:ncell(s_el)))
+values <- extract(s_el, coords)
+coords$lon <- coords$x
+coords$lat <- coords$y
+sanantonio_elevation <- as.data.frame(cbind(coords$lon, coords$lat, values))
+sanantonio_elevation$City <- "San Antonio"
+colnames(sanantonio_elevation)[1:2] <- c("longitude", "latitude")
+
+sanantonio_gardens <- data.frame("Loc_ID" = c("G", "FBM", "FBSJ", "TTF"), "city" = "San Antonio")
+
+# Process building data
+sanantonio_buildings <- do.call(rbind, mapply(building_fun, sanantonio_gardens$Loc_ID, sanantonio_gardens$city, SIMPLIFY = FALSE)) %>%
+  st_as_sf() %>%
+  filter(building %in% c("hospital", "car_repair", "industrial", "retail", "commercial", "parking", "residential", "warehouse"))
+
+sanantonio_buildings <- sanantonio_buildings %>%
+  st_as_sf() %>%
+  st_centroid() %>%
+  mutate(latitude = st_coordinates(geometry)[, 2], longitude = st_coordinates(geometry)[, 1]) %>%
+  as.data.frame()
+
+# Merge data and calculate distances
+sa.total <- merge(subset(comp_data_short, City == "San Antonio"), sanantonio_buildings[, c(1, 2, 3, 5:6)], by = c("Loc_ID", "City"))
+
+colnames(sa.total)[c(46:47, 67:68)] <- c("sample_latitude", "sample_longitude", "build_latitude", "build_longitude")
+
+sa.total$build_gard_dist <- apply(sa.total, 1, function(row) {
+  samp_lat <- as.numeric(row["sample_latitude"])
+  samp_long <- as.numeric(row["sample_longitude"])
+  build_lat <- as.numeric(row["build_latitude"])
+  build_long <- as.numeric(row["build_longitude"])
+  dist_meters <- distHaversine(c(samp_long, samp_lat), c(build_long, build_lat))
+  dist_miles <- dist_meters * 0.000621371
+  return(dist_miles)})
+
+sa.total_filtered <- sa.total %>%
+  filter(build_gard_dist <= 10)
+
+# Include zero counts for gardens with no buildings
+all_gardens <- unique(sanantonio_gardens$Loc_ID)
+
+building_counts <- sa.total_filtered %>%
+  group_by(City, Loc_ID, building) %>%
+  summarise(building_count = n(), .groups = 'drop') %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(building_count = 0))
+
+avg_distances <- sa.total_filtered %>%
+  group_by(Loc_ID, building) %>%
+  summarise(avg_distance = mean(build_gard_dist)) %>%
+  ungroup() %>%
+  complete(Loc_ID = all_gardens, fill = list(avg_distance = NA))
+
+s.merged_data <- merge(building_counts, avg_distances, by = c("Loc_ID", "building"))
+
+# Combine data from all cities
+merged_data <- bind_rows(d.merged_data, h.merged_data, s.merged_data)
+```
+
+```{r Update Comp Data Short Dataframe}
+building_conc_data <- merge(comp_data_short,merged_data,
+                            by=c("Loc_ID","City"))
+
+###### Count unique Superfund sites within 10 miles for each Loc_ID
+count_unique_superfund_sites <- function(superfund_sites, distances) {
+  unique_sites_within_10_miles <- unique(superfund_sites[distances <= 10])
+  count <- length(unique_sites_within_10_miles)
+  return(count)}
+
+building_conc_data <- building_conc_data %>%
+  rowwise() %>%
+  mutate(sf_10miles = sum(c_across(starts_with("North Cavalcade"):ends_with("Bandera GW Plume")) <= 10, na.rm = TRUE))
+
+colnames(building_conc_data)[c(46:47)] <- c("sample_latitude","sample_longitude")
+
+#########  Merge city elevation data based on garden locations
+all_elev <- merge(d_el,h_el,s_el)
+
+points2 <- SpatialPoints(coords = building_conc_data[, c("sample_longitude", "sample_latitude")])
+
+building_conc_data$elevation <- extract(all_elev, points2)
+
+### Count distance to city center
+city_centers <- data.frame(
+  City = c("Dallas", "Houston", "San Antonio"),
+  Lat = c(dallas_center$lat, houston_center$lat, sanantonio_center$lat),
+  Lon = c(dallas_center$long, houston_center$long, sanantonio_center$long))
+
+building_conc_data <- building_conc_data %>%
+  left_join(city_centers, by = "City") %>%
+  mutate(
+    city_center_lat = Lat,
+    city_center_lon = Lon)
+
+# Calculate distance between garden and city center for each row
+calculate_distance_miles <- function(lon1, lat1, lon2, lat2) {
+  distVincentyEllipsoid(c(lon1, lat1), c(lon2, lat2)) / 1609.344}
+
+building_conc_data$garden_distance_citycenter <- mapply(
+  calculate_distance_miles,
+  building_conc_data$sample_longitude, building_conc_data$sample_latitude,
+  building_conc_data$city_center_lon, building_conc_data$city_center_lat)
+```
+
+```{r High Level Visualization of Concentration Data}
+# City wide boxplot
+comp_long <- comp_long %>%
+  group_by(Compound) %>%
+  mutate(MedianConcentration = median(Concentration, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Compound = reorder(Compound, MedianConcentration))
+
+# Plotting
+ggplot(comp_long, aes(x = City, y = Concentration, fill = Compound)) +
+  geom_boxplot(alpha = 0.6, position = position_dodge(width = 0.75),outlier.shape = NA) +  
+  geom_jitter(aes(color = Compound), 
+              position = position_jitterdodge(jitter.width = 0.2, 
+                                              dodge.width = 0.75), 
+              size = 1.5, alpha = 0.8) + 
+  labs(x = "", 
+       y = "Concentration (ppm)") +
+  theme_bw() +
+  scale_y_log10() + 
+  scale_fill_brewer(palette = "Paired") +
+  scale_color_brewer(palette = "Paired") +
+  theme(text = element_text(size = 30),
+        legend.position = "none")
+```
+
+####### Network Analysis 
+```{r Quickly make any needed adjustments}
+building_conc_data$Depth_factor <- factor(building_conc_data$`Depth (cm)`)
+building_conc_data$Depth_numeric <- as.numeric(building_conc_data$Depth_factor)
+
+building_conc_data$ClayPercRange <- factor(building_conc_data$ClayPercRange)
+building_conc_data$ClayPercRange <- as.numeric(building_conc_data$ClayPercRange)
+```
+
+```{r Network Analysis -- Load Data}
+#detach("package:igraph",unload=TRUE)
+# library(statnet)
+# library(lme4)
+# library(bootnet)
+# library(huge)
+
+network.d <- building_conc_data %>%
+  dplyr::select(Site_ID, 
+                Cd,           # Replace with heavy metal of interest
+                TotalCarbon, 
+                garden_distance_citycenter, 
+                ClayPerc, 
+                Precip,
+                Depth_numeric, 
+                sf_10miles)
+
+network.d_renamed <- network.d %>%
+  dplyr::rename(    
+    CityDist = garden_distance_citycenter, 
+    NumSF = sf_10miles)
+
+network.d.final_unique <- network.d_renamed %>%
+  distinct(Site_ID, .keep_all = TRUE) %>%
+  dplyr::select(-Site_ID)
+
+###############
+network.d.final_labeled <- network.d_renamed %>%
+  distinct(Site_ID, .keep_all = TRUE)
+##############
+
+categorical_poisson_vars <- c("Depth_numeric", "NumSF")
+
+categorical_poisson_data <- network.d.final_unique[, categorical_poisson_vars]
+
+continuous_data <- network.d.final_unique[, !names(network.d.final_unique) %in% categorical_poisson_vars]
+
+continuous_data_trans <- huge.npn(continuous_data, npn.func = "shrinkage", verbose = TRUE)
+
+network.d.trans <- cbind(categorical_poisson_data, continuous_data_trans)
+```
+
+```{r Network Analysis -- Mixed Graphical Model}
+library(mgm)
+network.d.matrix <- as.matrix(network.d.trans)
+
+type_v <- c("c",
+            "p",
+            "g","g","g","g","g")
+
+level_v <- c(3,
+             1,
+             1,1,1,1,1)
+set.seed(173)
+index <- sample(1:nrow(network.d.matrix), nrow(network.d.matrix) * 0.7)
+train_data <- na.omit(network.d.matrix[index, ])
+test_data <- na.omit(network.d.matrix[-index, ])
+
+fit_mgm <- mgm(data = train_data,
+               type = type_v,
+               levels = level_v,
+               k = 2,
+               lambdaSel = "EBIC",  # Extended Bayesian Inf. Criter
+               lambdagam= 0.25,      # Hyperparameter Gamma
+               alphaSeq = 0,        # LASSO Used = 1, ridge regression = 0
+               ruleReg = "OR")     # At least 1 value non-zero to plot edge (OR) or both need non-zero to form edge (AND)
+
+net1 <- round(fit_mgm$pairwise$wadj, 2)
+```
+
+```{r Network Analysis -- Prediction Errors}
+fit_mgm_test <- mgm(data = test_data,
+                    type = type_v,
+                    levels = level_v,
+                    k = 2,
+                    lambdaSel = "EBIC",
+                    lambdagam = 0.25,
+                    alphaSeq = 0,
+                    ruleReg = "OR")
+
+net2 <- round(fit_mgm_test$pairwise$wadj, 2)
+
+train_edges <- sum(as.matrix(net1) != 0) / 2  
+test_edges <- sum(as.matrix(net2) != 0) / 2  
+overlap_edges <- sum(as.matrix(net1) != 0 & net2 != 0) / 2
+cat("Training edges: ", train_edges, "\n")
+cat("Testing edges: ", test_edges, "\n")
+cat("Overlap edges: ", overlap_edges, "\n")
+
+precision <- overlap_edges / test_edges
+recall <- overlap_edges / train_edges
+f1_score <- 2 * (precision * recall) / (precision + recall)
+cat("Edge Precision: ", precision, "\n")
+cat("Edge Recall: ", recall, "\n")
+cat("F1-Score: ", f1_score, "\n")
+```
+
+```{r Network Analysis -- Visualize Network}
+library(ggplot2)
+library(network)
+
+set.seed(444)
+net3 <- network(net1, matrix.type = "adjacency", ignore.eval = FALSE, names.eval = "strength", gmode = "graph")
+network.vertex.names(net3) <- colnames(network.d.matrix)
+net3 %v% "alldeg" <- degree(net3)
+IClevel <- net3 %e% "strength"  
+edges <- as.edgelist(net3, output = "tibble")
+edges$strength <- IClevel
+edges$From <- colnames(network.d.matrix)[edges$.tail]  # Source node names
+edges$To <- colnames(network.d.matrix)[edges$.head]  # Target node names
+
+connections <- data.frame("From" = edges$From, "To" = edges$To, "Strength" = edges$strength)
+deg <- data.frame("value" = degree(net3, gmode = "graph"), "node" = colnames(network.d.matrix))
+deg$type <- "# Connections to Other Nodes"
+
+# Network plot (final visualization)
+set.seed(444)
+gplot(net3,
+      gmode = "graph",
+      edge.lwd = 1.5 * IClevel,
+      vertex.cex = deg$value / 2.5,
+      usearrows = FALSE,
+      displaylabels = TRUE,
+      label.col = "black", label.cex = 1, label.pos = 3,
+      edge.col = "cadetblue4",
+      vertex.col = "bisque3",
+      vertex.border = "bisque4")
+```
+
+#### Evaluate the conditionally dependent variables and their relationships with the heavy metals of interest
+
+```{r Graph network results - Arsenic}
+#### Percent contribution from each node
+as_connections <- connections %>%
+  filter(To == "As") 
+
+as_connections_top4 <- as_connections %>%
+  dplyr::select(From, Strength) %>%
+  group_by(From) %>%
+  summarise(Strength = sum(Strength)) %>%
+  ungroup() %>%
+  mutate(Percent = 100 * Strength / sum(Strength)) %>%
+  slice_max(order_by = Percent, n = 4)  # Top 4
+
+# Step 3: Plot
+ggplot(as_connections_top4, aes(x = reorder(From, -Percent), y = Percent)) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(x = "Top 4 Strongest Connections",
+       y = "Percent Contribution (%)") +
+  scale_x_discrete(labels = c(
+    "CityDist" = "City \n Distance",
+    "NumSF" = "Number \n Superfunds",
+    "TotalCarbon" = "Total \n Carbon",
+    "ClayPerc" = "Clay \n Percent")) +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+#### Evaluate the trends of most important vars
+filtered_data <- network.d.final_labeled %>%
+  filter(!is.na(ClayPerc) & is.finite(ClayPerc)) %>%
+  filter(!str_detect(Site_ID, "^(W|BE)")) %>%
+  mutate(
+    ClayPerc_group = cut(
+      ClayPerc,
+      breaks = c(seq(0, 30, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25", "25-30","30+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    City_group = cut(
+      CityDist,
+      breaks = c(seq(0, 25, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25", "25+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    Carbon_group = cut(
+      TotalCarbon,
+      breaks = c(seq(0, 100, by = 20), Inf),
+      labels = c("0–20", "20–40", "40–60", "60–80", "80–100", "100+"),
+      include.lowest = TRUE,
+      right = FALSE))
+
+Q1 <- quantile(filtered_data$As, 0.25, na.rm = TRUE)
+Q3 <- quantile(filtered_data$As, 0.75, na.rm = TRUE)
+IQR_As <- Q3 - Q1
+lower_bound <- Q1 - 1.5 * IQR_As
+upper_bound <- Q3 + 1.5 * IQR_As
+filtered_data_no_outliers <- filtered_data %>%
+  filter(As >= lower_bound & As <= upper_bound)
+
+# Arsenic vs TotalCarbon
+ggplot(filtered_data_no_outliers, aes(x = Carbon_group, y = As)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Total Carbon (mg/kg)", y = "As (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Arsenic vs Superfund Sites
+ggplot(filtered_data_no_outliers, aes(x = as.factor(NumSF), y = As)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Number of Superfund Sites", y = "As (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5")) 
+
+# Arsenic vs CityDist
+ggplot(filtered_data_no_outliers, aes(x = City_group, y = As)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Distance to City Center (miles)", y = "As (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Arsenic vs ClayPerc
+ggplot(filtered_data_no_outliers, aes(x = ClayPerc_group, y = As)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Clay (%)", y = "As (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+```
+
+```{r Graph network results - Cadmium}
+#### Percent contribution from each node
+cd_connections <- connections %>%
+  filter(To == "Cd")  
+
+# Step 2: Aggregate and compute percent contribution
+cd_connections_top4 <- cd_connections %>%
+  dplyr::select(From, Strength) %>%
+  group_by(From) %>%
+  summarise(Strength = sum(Strength)) %>%
+  ungroup() %>%
+  mutate(Percent = 100 * Strength / sum(Strength)) %>%
+  slice_max(order_by = Percent, n = 4)  # Top 4
+
+# Step 3: Plot as bar chart
+ggplot(cd_connections_top4, aes(x = reorder(From, -Percent), y = Percent)) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(x = "Top 4 Strongest Connections",
+       y = "Percent Contribution (%)") +
+  scale_x_discrete(labels = c(
+    "ClayPerc" = "Percent \n Clay",
+    "Precip" = "Precipitation",
+    "Depth_numeric" = "Sample \n Depth",
+    "TotalCarbon" = "Total \n Carbon")) +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+#### Evaluate the trends of most important vars
+filtered_data <- network.d.final_labeled %>%
+  filter(!is.na(ClayPerc) & is.finite(ClayPerc)) %>%
+  filter(!is.na(TotalCarbon) & is.finite(TotalCarbon)) %>%
+  filter(!str_detect(Site_ID, "^(W|BE)")) %>%
+  mutate(
+    ClayPerc_group = cut(
+      ClayPerc,
+      breaks = c(seq(0, 30, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25",
+                 "25-30", "30+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    Carbon_group = cut(
+      TotalCarbon,
+      breaks = c(seq(0, 100, by = 20), Inf),
+      labels = c("0–20", "20–40", "40–60", "60–80", "80–100", "100+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    Precip_group = cut(
+      Precip,
+      breaks = c(seq(0,2.6, by=0.2), Inf),
+      labels = c("0-0.2","0.2-04","0.4-0.6","0.6-0.8","0.8-1.0","1.0-1.2","1.2-1.4","1.4-1.6","1.6-1.8","1.8-2.0","2.0-2.2","2.2-2.4","2.4-2.6","2.6+")))
+
+# Calculate the IQR for Cd (chromium) variable to remove outliers, ignoring NA values
+Q1 <- quantile(filtered_data$Cd, 0.25, na.rm = TRUE)
+Q3 <- quantile(filtered_data$Cd, 0.75, na.rm = TRUE)
+IQR_Cd <- Q3 - Q1
+
+# Define the outlier thresholds
+lower_bound <- Q1 - 1.5 * IQR_Cd
+upper_bound <- Q3 + 1.5 * IQR_Cd
+
+# Remove outliers from the Cd variable, handling NA values
+filtered_data_no_outliers <- filtered_data %>%
+  filter(Cd >= lower_bound & Cd <= upper_bound)
+
+# Cadmium vs ClayPerc
+ggplot(filtered_data_no_outliers, aes(x = ClayPerc_group, y = Cd)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Clay (%)", y = "Cd (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Cadmium vs TotalCarbon
+ggplot(filtered_data_no_outliers, aes(x = Carbon_group, y = Cd)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Total Carbon (mg/kg)", y = "Cd (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Cadmium vs Precipitation
+ggplot(filtered_data_no_outliers, aes(x = Precip_group, y = Cd)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Annual Precipitation (mm)", y = "Cd (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Cadmium vs Depth
+ggplot(filtered_data_no_outliers, aes(x = as.factor(Depth_numeric), y = Cd)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Sampling Depth (cm)", y = "Cd (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+```
+
+```{r Graph network results - Lead}
+#### Percent contribution from each node
+# Step 1: Filter only rows where Pb is connected
+pb_connections <- connections %>%
+  filter(To == "Pb")  
+
+# Step 2: Aggregate and compute percent contribution
+pb_connections_top4 <- pb_connections %>%
+  dplyr::select(From, Strength) %>%
+  group_by(From) %>%
+  summarise(Strength = sum(Strength)) %>%
+  ungroup() %>%
+  mutate(Percent = 100 * Strength / sum(Strength)) %>%
+  slice_max(order_by = Percent, n = 4)  # Top 4
+
+# Step 3: Plot as bar chart
+ggplot(pb_connections_top4, aes(x = reorder(From, -Percent), y = Percent)) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(x = "Top 4 Strongest Connections",
+       y = "Percent Contribution (%)") +
+  scale_x_discrete(labels = c(
+    "Depth_numeric" = "Sample \n Depth",
+    "CityDist" = "Distance \n to City",
+    "TotalCarbon" = "Total \n Carbon",
+    "NumSF" = "Number \n Superfunds")) +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+#### Evaluate the trends of most important vars
+#write.csv(network.final.labeled, "network.final.labeled.csv", row.names = FALSE)
+
+filtered_data <- network.d.final_labeled  %>%
+  filter(!is.na(ClayPerc) & is.finite(ClayPerc)) %>%
+  filter(!is.na(TotalCarbon) & is.finite(TotalCarbon)) %>%
+  filter(!str_detect(Site_ID, "^(W|BE)")) %>%
+  mutate(
+    Carbon_group = cut(
+      TotalCarbon,
+      breaks = c(seq(0, 100, by = 20), Inf),
+      labels = c("0–20", "20–40", "40–60", "60–80", "80–100", "100+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    City_group = cut(
+      CityDist,
+      breaks = c(seq(0, 25, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25", "25+"),
+      include.lowest = TRUE,
+      right = FALSE))
+
+# Calculate the IQR for Pb (lead) variable to remove outliers, ignoring NA values
+Q1 <- quantile(filtered_data$Pb, 0.25, na.rm = TRUE)
+Q3 <- quantile(filtered_data$Pb, 0.75, na.rm = TRUE)
+IQR_Pb <- Q3 - Q1
+
+# Define the outlier thresholds
+lower_bound <- Q1 - 1.5 * IQR_Pb
+upper_bound <- Q3 + 1.5 * IQR_Pb
+
+# Remove outliers from the Pb variable, handling NA values
+filtered_data_no_outliers <- filtered_data %>%
+  filter(Pb >= lower_bound & Pb <= upper_bound)
+
+# Lead vs TotalCarbon
+ggplot(filtered_data_no_outliers, aes(x = Carbon_group, y = Pb)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Total Carbon (mg/kg)", y = "Pb (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Lead vs CityDist
+ggplot(filtered_data_no_outliers, aes(x = City_group, y = Pb)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Garden Distance to City Center (miles)", y = "Pb (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Lead vs Depth
+ggplot(filtered_data_no_outliers, aes(x = as.factor(Depth_numeric), y = Pb)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Sampling Depth (cm)", y = "Pb (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+# Lead vs NumSF
+ggplot(filtered_data_no_outliers, aes(x = as.factor(NumSF), y = Pb)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Number of Superfund Sites", y = "Pb (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+```
+
+```{r Graph network results - Chromium}
+#### Percent contribution from each node
+cr_connections <- connections %>%
+  filter(To == "Cr")  
+
+# Step 2: Aggregate and compute percent contribution
+cr_connections_top4 <- cr_connections %>%
+  dplyr::select(From, Strength) %>%
+  group_by(From) %>%
+  summarise(Strength = sum(Strength)) %>%
+  ungroup() %>%
+  mutate(Percent = 100 * Strength / sum(Strength)) %>%
+  slice_max(order_by = Percent, n = 4)  # Top 4
+
+# Step 3: Plot as bar chart
+ggplot(cr_connections_top4, aes(x = reorder(From, -Percent), y = Percent)) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(x = "Top 4 Strongest Connections",
+       y = "Percent Contribution (%)") +
+  scale_x_discrete(labels = c(
+    "ClayPerc" = "Percent \n Clay",
+    "TotalCarbon" = "Total \n Carbon",
+    "NumSF" = "Number \n Superfunds",
+    "CityDist" = "Distance \n to City")) +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+#### Evaluate the trends of most important vars
+filtered_data <- network.d.final_labeled %>%
+  filter(!is.na(ClayPerc) & is.finite(ClayPerc)) %>%
+  filter(!is.na(TotalCarbon) & is.finite(TotalCarbon)) %>%
+  filter(!str_detect(Site_ID, "^(W|BE)")) %>%
+  mutate(
+    Carbon_group = cut(
+      TotalCarbon,
+      breaks = c(seq(0, 100, by = 20), Inf),
+      labels = c("0–20", "20–40", "40–60", "60–80", "80–100", "100+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    ClayPerc_group = cut(
+      ClayPerc,
+      breaks = c(seq(0, 30, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25",
+                 "25-30", "30+"),
+      include.lowest = TRUE,
+      right = FALSE),
+    City_group = cut(
+      CityDist,
+      breaks = c(seq(0, 25, by = 5), Inf),
+      labels = c("0–5", "5-10", "10-15", "15-20", "20-25", "25+"),
+      include.lowest = TRUE,
+      right = FALSE))
+
+# Calculate the IQR for Cr (chromium) variable to remove outliers, ignoring NA values
+Q1 <- quantile(filtered_data$Cr, 0.25, na.rm = TRUE)
+Q3 <- quantile(filtered_data$Cr, 0.75, na.rm = TRUE)
+IQR_Cr <- Q3 - Q1
+
+# Define the outlier thresholds
+lower_bound <- Q1 - 1.5 * IQR_Cr
+upper_bound <- Q3 + 1.5 * IQR_Cr
+
+# Remove outliers from the Cr variable, handling NA values
+filtered_data_no_outliers <- filtered_data %>%
+  filter(Cr >= lower_bound & Cr <= upper_bound)
+
+# Chromium vs PercClay
+ggplot(filtered_data_no_outliers, aes(x = ClayPerc_group, y = Cr)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Clay (%)", y = "Cr (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm")
+
+# Chromium vs. NumSF
+ggplot(filtered_data_no_outliers, aes(x = as.factor(NumSF), y = Cr)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Number of Superfund Sites", y = "Cr (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5")) 
+
+# Chromium vs TotalCarbon
+ggplot(filtered_data_no_outliers, aes(x = Carbon_group, y = Cr)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Total Carbon (mg/kg)", y = "Cr (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+
+# Chromium vs CityDist
+ggplot(filtered_data_no_outliers, aes(x = City_group, y = Cr)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  labs(x = "Distance to City Center (miles)", y = "Cr (ppm)") +
+  theme_minimal() +
+  theme(text = element_text(size = 40),
+        axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40),"cm")
+```
+
+##### Predicting HM Values
+
+```{r Predicting As using RF}
+# ==== 1. Clean Raw Data ====
+df_clean_As <- network.d.final_unique %>%
+  dplyr::select(As, TotalCarbon, CityDist, NumSF, ClayPerc) %>%
+  na.omit()
+
+# Scale data
+df_scaled <- scale(df_clean_As)
+
+# Remove outliers
+z_thresh <- 5
+no_outliers_zscore <- apply(df_scaled, 1, function(row) all(abs(row) <= z_thresh))
+df_no_outliers <- as.data.frame(df_scaled[no_outliers_zscore, ])
+
+# Save As scaling parameters
+as_mean <- attr(df_scaled, "scaled:center")["As"]
+as_sd   <- attr(df_scaled, "scaled:scale")["As"]
+unscale_as <- function(x) x * as_sd + as_mean
+
+# ==== 2. Train/Test Split ====
+set.seed(123)
+train_index <- caret::createDataPartition(df_no_outliers$As, p = 0.65, list = FALSE)
+train_data <- df_no_outliers[train_index, ]
+test_data  <- df_no_outliers[-train_index, ]
+
+# ==== 3. Cross-Validation Control ====
+ctrl <- caret::trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  verboseIter = FALSE,
+  search = "random"
+)
+
+# ==== 4. Random Forest Model ====
+rf_grid <- expand.grid(mtry = 4)
+rf_fit <- caret::train(
+  As ~ CityDist + NumSF + ClayPerc + TotalCarbon,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  ntree = 500,
+  nodesize = 5)
+
+# ==== 5. Predictions ====
+rf_train_preds <- predict(rf_fit, newdata = train_data)
+rf_preds <- predict(rf_fit, newdata = test_data)
+
+# Unscale
+train_preds_unscaled <- unscale_as(rf_train_preds)
+train_actual_unscaled <- unscale_as(train_data$As)
+test_preds_unscaled <- unscale_as(rf_preds)
+test_actual_unscaled <- unscale_as(test_data$As)
+
+# ==== 6. Metrics ====
+train_r2 <- cor(train_preds_unscaled, train_actual_unscaled)^2
+train_rmse <- Metrics::rmse(train_actual_unscaled, train_preds_unscaled)
+train_mae <- Metrics::mae(train_actual_unscaled, train_preds_unscaled)
+
+test_r2 <- cor(test_preds_unscaled, test_actual_unscaled)^2
+test_rmse <- Metrics::rmse(test_actual_unscaled, test_preds_unscaled)
+test_mae <- Metrics::mae(test_actual_unscaled, test_preds_unscaled)
+
+# ==== 7. Dataframes for Plotting ====
+train_df <- data.frame(
+  Actual = train_actual_unscaled,
+  Predicted = train_preds_unscaled,
+  Dataset = "Training")
+
+test_df <- data.frame(
+  Actual = test_actual_unscaled,
+  Predicted = test_preds_unscaled,
+  Dataset = "Validation")
+
+combined_df <- rbind(train_df, test_df)
+
+min_val <- min(combined_df$Actual, combined_df$Predicted) * 0.9
+max_val <- max(combined_df$Actual, combined_df$Predicted) * 1.1
+
+# ==== 8. Fit Linear Models for Equation ====
+train_lm <- lm(Predicted ~ Actual, data = train_df)
+train_eq <- sprintf("y = %.2fx + %.2f", coef(train_lm)[2], coef(train_lm)[1])
+
+test_lm <- lm(Predicted ~ Actual, data = test_df)
+test_eq <- sprintf("y = %.2fx + %.2f", coef(test_lm)[2], coef(test_lm)[1])
+
+# ==== 9. Annotation Text ====
+train_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                       train_r2, train_rmse, train_mae)
+
+test_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                      test_r2, test_rmse, test_mae)
+
+# ==== 10. Plots ====
+train_plot <- ggplot(train_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#4472C4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#4472C4", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95,
+           label = train_annot, hjust = 0, vjust = 1, size = 7, color = "#4472C4") +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured As (ppm)", y = "Predicted As (ppm)", title = "Training Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+test_plot <- ggplot(test_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#ED7D31") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#ED7D31", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95,
+           label = test_annot, hjust = 0, vjust = 1, size = 7, color = "#ED7D31") +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured As (ppm)", y = "Predicted As (ppm)", title = "Validation Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 16),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 20, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+# Combine Plots
+scatter_plot <- train_plot + test_plot +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size = 40, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        axis.title.y = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm"))
+
+print(scatter_plot)
+```
+
+```{r Predicting Cd using RF}
+# library(caret)
+# library(Metrics)
+# library(ggplot2)
+# library(dplyr)
+# library(patchwork)
+
+# ==== 1. Clean Raw Data ====
+df_clean_Cd <- network.d.final_unique %>%
+  dplyr::select(Cd, ClayPerc, TotalCarbon, Precip, Depth_numeric) %>%
+  na.omit()
+
+# Scale data
+df_scaled <- scale(df_clean_Cd)
+
+# Remove outliers
+z_thresh <- 5
+no_outliers_zscore <- apply(df_scaled, 1, function(row) all(abs(row) <= z_thresh))
+df_no_outliers <- as.data.frame(df_scaled[no_outliers_zscore, ])
+
+# Save Cd scaling parameters
+cd_mean <- attr(df_scaled, "scaled:center")["Cd"]
+cd_sd   <- attr(df_scaled, "scaled:scale")["Cd"]
+unscale_cd <- function(x) x * cd_sd + cd_mean
+
+# ==== 2. Train/Test Split ====
+set.seed(123)
+train_index <- caret::createDataPartition(df_no_outliers$Cd, p = 0.65, list = FALSE)
+train_data <- df_no_outliers[train_index, ]
+test_data  <- df_no_outliers[-train_index, ]
+
+# ==== 3. Cross-Validation Control ====
+ctrl <- caret::trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  verboseIter = FALSE,
+  search = "random"
+)
+
+# ==== 4. Random Forest Model ====
+rf_grid <- expand.grid(mtry = 4)
+rf_fit <- caret::train(
+  Cd ~ ClayPerc + TotalCarbon + Precip + Depth_numeric,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  ntree = 500,
+  nodesize = 5
+)
+
+# ==== 5. Predictions ====
+rf_train_preds <- predict(rf_fit, newdata = train_data)
+rf_preds <- predict(rf_fit, newdata = test_data)
+
+# Unscale
+train_preds_unscaled <- unscale_cd(rf_train_preds)
+train_actual_unscaled <- unscale_cd(train_data$Cd)
+test_preds_unscaled <- unscale_cd(rf_preds)
+test_actual_unscaled <- unscale_cd(test_data$Cd)
+
+# ==== 6. Metrics ====
+train_r2 <- cor(train_preds_unscaled, train_actual_unscaled)^2
+train_rmse <- Metrics::rmse(train_actual_unscaled, train_preds_unscaled)
+train_mae <- Metrics::mae(train_actual_unscaled, train_preds_unscaled)
+
+test_r2 <- cor(test_preds_unscaled, test_actual_unscaled)^2
+test_rmse <- Metrics::rmse(test_actual_unscaled, test_preds_unscaled)
+test_mae <- Metrics::mae(test_actual_unscaled, test_preds_unscaled)
+
+# ==== 7. Dataframes for Plotting ====
+train_df <- data.frame(
+  Actual = train_actual_unscaled,
+  Predicted = train_preds_unscaled,
+  Dataset = "Training"
+)
+
+test_df <- data.frame(
+  Actual = test_actual_unscaled,
+  Predicted = test_preds_unscaled,
+  Dataset = "Validation"
+)
+
+combined_df <- rbind(train_df, test_df)
+
+min_val <- min(combined_df$Actual, combined_df$Predicted) * 0.9
+max_val <- max(combined_df$Actual, combined_df$Predicted) * 1.1
+
+# ==== 8. Linear Model Equations ====
+train_lm <- lm(Predicted ~ Actual, data = train_df)
+train_eq <- sprintf("y = %.2fx + %.2f", coef(train_lm)[2], coef(train_lm)[1])
+
+test_lm <- lm(Predicted ~ Actual, data = test_df)
+test_eq <- sprintf("y = %.2fx + %.2f", coef(test_lm)[2], coef(test_lm)[1])
+
+# ==== 9. Annotation Text ====
+train_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                       train_r2, train_rmse, train_mae)
+
+test_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                      test_r2, test_rmse, test_mae)
+
+# ==== 10. Plots ====
+train_plot <- ggplot(train_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#4472C4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#4472C4", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95,
+           label = train_annot, hjust = 0, vjust = 1, size = 7, color = "#4472C4") +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Cd (ppm)", y = "Predicted Cd (ppm)", title = "Training Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+test_plot <- ggplot(test_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#ED7D31") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#ED7D31", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95,
+           label = test_annot, hjust = 0, vjust = 1, size = 7, color = "#ED7D31") +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Cd (ppm)", y = "Predicted Cd (ppm)", title = "Validation Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 16),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 20, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+# ==== 11. Combine and Display ====
+scatter_plot <- train_plot + test_plot +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size = 40, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        axis.title.y = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm"))
+
+print(scatter_plot)
+```
+
+```{r Predicting Pb using RF}
+# library(caret)
+# library(Metrics)
+# library(ggplot2)
+# library(dplyr)
+# library(patchwork)
+
+# ==== 1. Clean Raw Data ====
+df_clean_Pb <- network.d.final_unique %>%
+  dplyr::select(Pb, TotalCarbon, CityDist, NumSF, Depth_numeric) %>%
+  na.omit()
+
+# Scale data
+df_scaled <- scale(df_clean_Pb)
+
+# Remove outliers
+z_thresh <- 5
+no_outliers_zscore <- apply(df_scaled, 1, function(row) all(abs(row) <= z_thresh))
+df_no_outliers <- as.data.frame(df_scaled[no_outliers_zscore, ])
+
+# Save Pb scaling parameters
+pb_mean <- attr(df_scaled, "scaled:center")["Pb"]
+pb_sd   <- attr(df_scaled, "scaled:scale")["Pb"]
+unscale_pb <- function(x) x * pb_sd + pb_mean
+
+# ==== 2. Train/Test Split ====
+set.seed(123)
+train_index <- caret::createDataPartition(df_no_outliers$Pb, p = 0.65, list = FALSE)
+train_data <- df_no_outliers[train_index, ]
+test_data  <- df_no_outliers[-train_index, ]
+
+# ==== 3. Cross-Validation Control ====
+ctrl <- caret::trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  verboseIter = FALSE,
+  search = "random"
+)
+
+# ==== 4. Random Forest Model ====
+rf_grid <- expand.grid(mtry = 4)
+rf_fit <- caret::train(
+  Pb ~ TotalCarbon + CityDist + NumSF + Depth_numeric,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  ntree = 500,
+  nodesize = 5
+)
+
+# ==== 5. Predictions ====
+rf_train_preds <- predict(rf_fit, newdata = train_data)
+rf_preds <- predict(rf_fit, newdata = test_data)
+
+# Unscale predictions
+train_preds_unscaled <- unscale_pb(rf_train_preds)
+train_actual_unscaled <- unscale_pb(train_data$Pb)
+
+test_preds_unscaled <- unscale_pb(rf_preds)
+test_actual_unscaled <- unscale_pb(test_data$Pb)
+
+# ==== 6. Metrics ====
+train_r2 <- cor(train_preds_unscaled, train_actual_unscaled)^2
+train_rmse <- Metrics::rmse(train_actual_unscaled, train_preds_unscaled)
+train_mae <- Metrics::mae(train_actual_unscaled, train_preds_unscaled)
+
+test_r2 <- cor(test_preds_unscaled, test_actual_unscaled)^2
+test_rmse <- Metrics::rmse(test_actual_unscaled, test_preds_unscaled)
+test_mae <- Metrics::mae(test_actual_unscaled, test_preds_unscaled)
+
+# ==== 7. Prepare Data for Plotting ====
+train_df <- data.frame(Actual = train_actual_unscaled, Predicted = train_preds_unscaled)
+test_df  <- data.frame(Actual = test_actual_unscaled, Predicted = test_preds_unscaled)
+combined_df <- rbind(train_df, test_df)
+
+min_val <- min(combined_df$Actual, combined_df$Predicted) * 0.9
+max_val <- max(combined_df$Actual, combined_df$Predicted) * 1.1
+
+# ==== 8. Fit Linear Models for Equations ====
+train_lm <- lm(Predicted ~ Actual, data = train_df)
+train_eq <- sprintf("y = %.2fx + %.2f", coef(train_lm)[2], coef(train_lm)[1])
+
+test_lm <- lm(Predicted ~ Actual, data = test_df)
+test_eq <- sprintf("y = %.2fx + %.2f", coef(test_lm)[2], coef(test_lm)[1])
+
+# ==== 9. Create Annotations (stacked vertically) ====
+train_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                       train_r2, train_rmse, train_mae)
+
+test_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                      test_r2, test_rmse, test_mae)
+
+# ==== 10. Plot ====
+train_plot <- ggplot(train_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#4472C4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#4472C4", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95, label = train_annot,
+           hjust = 0, vjust = 1, size = 7, color = "#4472C4", lineheight = 1.1) +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Pb (ppm)", y = "Predicted Pb (ppm)", title = "Training Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+test_plot <- ggplot(test_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#ED7D31") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#ED7D31", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95, label = test_annot,
+           hjust = 0, vjust = 1, size = 7, color = "#ED7D31", lineheight = 1.1) +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Pb (ppm)", y = "Predicted Pb (ppm)", title = "Validation Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+# ==== 11. Combine Plots ====
+scatter_plot <- train_plot + test_plot +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size = 40, face = "bold", hjust = 0.5),
+                  axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        axis.title.y = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm"))
+
+# ==== 12. Display ====
+print(scatter_plot)
+```
+
+```{r Predicting Cr using RF}
+# library(caret)
+# library(Metrics)
+# library(ggplot2)
+# library(dplyr)
+# library(patchwork)
+
+# ==== 1. Clean Raw Data ====
+df_clean_Cr <- network.d.final_unique %>%
+  dplyr::select(Cr, NumSF, ClayPerc, TotalCarbon, CityDist) %>%
+  na.omit()
+
+# Scale data
+df_scaled <- scale(df_clean_Cr)
+
+# Remove outliers
+z_thresh <- 5
+no_outliers_zscore <- apply(df_scaled, 1, function(row) all(abs(row) <= z_thresh))
+df_no_outliers <- as.data.frame(df_scaled[no_outliers_zscore, ])
+
+# Save Cr scaling parameters
+cr_mean <- attr(df_scaled, "scaled:center")["Cr"]
+cr_sd   <- attr(df_scaled, "scaled:scale")["Cr"]
+unscale_cr <- function(x) x * cr_sd + cr_mean
+
+# ==== 2. Train/Test Split ====
+set.seed(123)
+train_index <- caret::createDataPartition(df_no_outliers$Cr, p = 0.65, list = FALSE)
+train_data <- df_no_outliers[train_index, ]
+test_data  <- df_no_outliers[-train_index, ]
+
+# ==== 3. Cross-Validation Control ====
+ctrl <- caret::trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  verboseIter = FALSE,
+  search = "random"
+)
+
+# ==== 4. Random Forest Model ====
+rf_grid <- expand.grid(mtry = 4)
+rf_fit <- caret::train(
+  Cr ~ NumSF + ClayPerc + TotalCarbon + CityDist,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  ntree = 500,
+  nodesize = 5
+)
+
+# ==== 5. Predictions ====
+rf_train_preds <- predict(rf_fit, newdata = train_data)
+rf_preds <- predict(rf_fit, newdata = test_data)
+
+# Unscale predictions
+train_preds_unscaled <- unscale_cr(rf_train_preds)
+train_actual_unscaled <- unscale_cr(train_data$Cr)
+
+test_preds_unscaled <- unscale_cr(rf_preds)
+test_actual_unscaled <- unscale_cr(test_data$Cr)
+
+# ==== 6. Metrics ====
+train_r2 <- cor(train_preds_unscaled, train_actual_unscaled)^2
+train_rmse <- Metrics::rmse(train_actual_unscaled, train_preds_unscaled)
+train_mae <- Metrics::mae(train_actual_unscaled, train_preds_unscaled)
+
+test_r2 <- cor(test_preds_unscaled, test_actual_unscaled)^2
+test_rmse <- Metrics::rmse(test_actual_unscaled, test_preds_unscaled)
+test_mae <- Metrics::mae(test_actual_unscaled, test_preds_unscaled)
+
+# ==== 7. Prepare Data for Plotting ====
+train_df <- data.frame(Actual = train_actual_unscaled, Predicted = train_preds_unscaled)
+test_df  <- data.frame(Actual = test_actual_unscaled, Predicted = test_preds_unscaled)
+combined_df <- rbind(train_df, test_df)
+
+min_val <- min(combined_df$Actual, combined_df$Predicted) * 0.9
+max_val <- max(combined_df$Actual, combined_df$Predicted) * 1.1
+
+# ==== 8. Fit Linear Models for Equations ====
+train_lm <- lm(Predicted ~ Actual, data = train_df)
+train_eq <- sprintf("y = %.2fx + %.2f", coef(train_lm)[2], coef(train_lm)[1])
+
+test_lm <- lm(Predicted ~ Actual, data = test_df)
+test_eq <- sprintf("y = %.2fx + %.2f", coef(test_lm)[2], coef(test_lm)[1])
+
+# ==== 9. Create Annotations (stacked vertically) ====
+train_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                       train_r2, train_rmse, train_mae)
+
+test_annot <- sprintf("R² = %.2f\nRMSE = %.2f\nMAE = %.2f",
+                      test_r2, test_rmse, test_mae)
+
+# ==== 10. Plot ====
+train_plot <- ggplot(train_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#4472C4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#4472C4", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95, label = train_annot,
+           hjust = 0, vjust = 1, size = 7, color = "#4472C4", lineheight = 1.1) +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Cr (ppm)", y = "Predicted Cr (ppm)", title = "Training Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+test_plot <- ggplot(test_df, aes(x = Actual, y = Predicted)) +
+  geom_point(size = 3, alpha = 0.7, color = "#ED7D31") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 0.8) +
+  geom_smooth(method = "lm", color = "#ED7D31", se = FALSE, size = 1) +
+  annotate("text", x = min_val * 1.05, y = max_val * 0.95, label = test_annot,
+           hjust = 0, vjust = 1, size = 7, color = "#ED7D31", lineheight = 1.1) +
+  coord_cartesian(xlim = c(min_val, max_val), ylim = c(min_val, max_val)) +
+  labs(x = "Measured Cr (ppm)", y = "Predicted Cr (ppm)", title = "Validation Dataset") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 40),
+    axis.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 17),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 1),
+    strip.text = element_text(size = 18, face = "bold"),
+    strip.background = element_rect(fill = "white"))
+
+# ==== 11. Combine Plots ====
+scatter_plot <- train_plot + test_plot +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size = 40, face = "bold", hjust = 0.5),
+                  axis.title.x = element_text(margin = ggplot2::margin(t = 25)),
+        axis.title.y = element_text(margin = ggplot2::margin(t = 25)),
+        plot.margin = ggplot2::margin(20, 20, 20, 40), "cm"))
+
+# ==== 12. Display ====
+print(scatter_plot)
+```
+
+
